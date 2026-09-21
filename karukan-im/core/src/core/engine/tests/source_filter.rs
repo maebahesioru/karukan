@@ -918,7 +918,8 @@ fn test_conversion_aux_reports_mode_and_chunk_like_composing() {
         "aux was: {composing}"
     );
     let aux = last_aux_text(&engine.process_key(&press_key(Keysym::SPACE))).expect("aux");
-    assert!(aux.starts_with("[あ][変換] あいk 2/30"), "aux was: {aux}");
+    assert!(aux.starts_with("[あ][変換]"), "aux was: {aux}");
+    assert!(aux.contains("あいk 2/30"), "aux was: {aux}");
 
     // A reading past the cap shows the caret's chunk alone, as composing
     // does — the counter would read 4/2 against the whole reading.

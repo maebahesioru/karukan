@@ -8,6 +8,7 @@ use tracing::debug;
 
 use super::filter::source_for_key;
 use super::*;
+use crate::core::preedit::{AttributeType, PreeditSegment};
 
 /// Maximum number of learning candidates to show
 const MAX_LEARNING_CANDIDATES: usize = 3;
@@ -91,15 +92,24 @@ impl InputMethodEngine {
     pub(super) fn start_conversion(&mut self, learning: LearningLookup) -> EngineResult {
         // Resolve the reading without touching the composition, so Esc
         // returns to an editable buffer with the romaji tail still live.
-        let reading = self.input_buf.settled_reading(&self.converters.romaji);
+        let settled = self.input_buf.settled_reading(&self.converters.romaji);
         // The unresolved tail keeps narrowing the predictive dictionary
         // lookup (わせd → 早稲田 stays selectable).
         let base = self.input_buf.reading();
         let pending = self.input_buf.pending();
+        // The model and the fallbacks convert the settled text only: an
+        // unresolved romaji tail would ride through the non-Japanese
+        // chunk passthrough as raw romaji into every candidate
+        // ("ログインできt"), which is unusable. The tail still narrows
+        // the predictive lookup below, and the commit hands it back as
+        // the next composition instead of baking it into the text.
+        let reading = if pending.is_empty() { settled } else { base.clone() };
 
         // Snapshot the live-conversion text before clearing it, so the
         // displayed candidate survives even if re-inference diverges.
-        let prev_suggest_text = self.live_text_with_pending();
+        // The tail stays out of the snapshot for the same reason as the
+        // reading above.
+        let prev_suggest_text = self.live_text();
         self.live.shown = false;
 
         if reading.is_empty() {
@@ -163,7 +173,7 @@ impl InputMethodEngine {
     ) -> EngineResult {
         let selected_text = candidates.selected_text().unwrap_or(reading).to_string();
 
-        let preedit = Preedit::with_text_highlighted(&selected_text);
+        let preedit = self.conversion_preedit(&selected_text);
 
         self.state = InputState::Conversion {
             preedit: preedit.clone(),
@@ -741,12 +751,30 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
+        // An unresolved romaji tail is the start of the next word, not
+        // part of this commit: hand it back as the next composition so
+        // typing continues naturally (the tail survives the commit
+        // instead of being baked into the committed text as raw romaji).
+        let tail = self.input_buf.pending();
         self.finish_conversion(&text, &reading);
 
-        EngineResult::consumed()
+        let mut result = EngineResult::consumed()
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
-            .with_action(EngineAction::Commit(text))
+            .with_action(EngineAction::Commit(text));
+
+        if !tail.is_empty() {
+            self.input_buf.clear();
+            for ch in tail.chars() {
+                self.input_buf.push_romaji(ch, &self.converters.romaji);
+            }
+            let preedit = self.set_composing_state();
+            result = result
+                .with_action(EngineAction::UpdatePreedit(preedit))
+                .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()));
+        }
+
+        result
     }
 
     /// Whether the selected candidate can be removed from the learning
@@ -887,13 +915,34 @@ impl InputMethodEngine {
         result
     }
 
+    /// The conversion preedit: the selected candidate highlighted with
+    /// the unresolved romaji tail appended as ordinary preedit text, so
+    /// the pending keystrokes stay visible while converting — they are
+    /// handed back as the next composition on commit, never baked into
+    /// the candidate or the committed text.
+    fn conversion_preedit(&self, selected_text: &str) -> Preedit {
+        let tail = self.input_buf.pending();
+        if tail.is_empty() {
+            return Preedit::with_text_highlighted(selected_text);
+        }
+        let display = format!("{selected_text}{tail}");
+        let caret = display.chars().count();
+        Preedit::from_segments(
+            vec![
+                PreeditSegment::highlighted(selected_text),
+                PreeditSegment::new(tail, AttributeType::Underline),
+            ],
+            caret,
+        )
+    }
+
     /// Update preedit after candidate selection change
     fn update_conversion_preedit(
         &mut self,
         selected_text: &str,
         candidates: CandidateList,
     ) -> EngineResult {
-        let preedit = Preedit::with_text_highlighted(selected_text);
+        let preedit = self.conversion_preedit(selected_text);
 
         if let Some(p) = self.state.preedit_mut() {
             *p = preedit.clone();

@@ -188,8 +188,9 @@ fn test_engine_commit_keeps_pending_tail() {
 fn test_conversion_keeps_pending_tail_of_live_candidate() {
     // "wasedad": the live suggestion converts only the settled reading
     // (わせだ→早稲田) and the pending `d` is displayed after it. Starting a
-    // conversion must surface 早稲田d — not 早稲田 — as the preserved top
-    // candidate, and commit it whole.
+    // conversion must not bake the raw tail into the candidates or the
+    // commit: the preedit keeps showing 早稲田d, the commit is 早稲田
+    // alone, and the tail continues as the next composition.
     let mut engine = make_live_conversion_engine();
     for ch in "wasedad".chars() {
         engine.process_key(&press(ch));
@@ -212,7 +213,11 @@ fn test_conversion_keeps_pending_tail_of_live_candidate() {
             }
         })
         .unwrap();
-    assert_eq!(commit_text, "早稲田d");
+    assert_eq!(commit_text, "早稲田");
+    // The pending tail is handed back as the next composition, not
+    // swallowed by the commit and not baked in as raw romaji.
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.pending(), "d");
 }
 
 #[test]
