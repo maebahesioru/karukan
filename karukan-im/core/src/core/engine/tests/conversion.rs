@@ -289,3 +289,63 @@ fn test_shift_space_steps_back_a_candidate() {
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
     assert!(committed(&result).is_none(), "Shift+Space must not commit");
 }
+
+#[test]
+fn test_conversion_with_pending_tail_excludes_raw_tail() {
+    let mut engine = InputMethodEngine::new();
+
+    // "あい" settled plus a live romaji tail "k": pressing Tab must
+    // convert the settled text only. The tail otherwise rides through
+    // the non-Japanese chunk passthrough as raw romaji and lands in
+    // every candidate ("あいk"), leaving nothing usable to pick.
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press('k'));
+    assert_eq!(engine.input_buf.pending(), "k");
+
+    engine.process_key(&press_key(Keysym::TAB));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let candidates: Vec<String> = engine
+        .candidates()
+        .unwrap()
+        .candidates()
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(!candidates.is_empty());
+    for text in &candidates {
+        assert!(
+            !text.contains('k'),
+            "candidate {text:?} carries the raw romaji tail"
+        );
+    }
+}
+
+#[test]
+fn test_commit_with_pending_tail_hands_tail_to_next_composition() {
+    let mut engine = InputMethodEngine::new();
+
+    // "あい" + pending "k" → convert → commit: the commit is the
+    // converted text alone, and the tail becomes the next composition
+    // (typing "a" continues into か) instead of being swallowed by the
+    // commit or baked in as raw romaji.
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press('k'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    let text = committed(&result).expect("commit must happen");
+    assert!(
+        !text.contains('k'),
+        "the raw tail must not ride into the commit: {text:?}"
+    );
+
+    // The tail is the next composition, live as if typed fresh.
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.pending(), "k");
+    engine.process_key(&press('a'));
+    assert_eq!(engine.input_buf.reading(), "か");
+}
