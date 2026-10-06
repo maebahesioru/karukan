@@ -126,8 +126,20 @@ impl InputMethodEngine {
         combined: &str,
     ) -> ComposingChunk {
         let converted = if reading.chars().any(is_japanese) {
-            let lctx = self.lctx_for(base_ctx, combined);
-            self.convert_chunk(&reading, &lctx)
+            // 学習キャッシュ最優先: ユーザーが確定した履歴はモデル予測より信頼する。
+            // やろう → 野郎 のようなモデルの誤予測を、確定済みの やろう で上書きする
+            // (実機報告 2026-10-06)。学習に無い読みだけモデルに回す。
+            let learned = self
+                .learning
+                .as_ref()
+                .and_then(|l| l.lookup(&reading).into_iter().next())
+                .map(|(surface, _)| surface);
+            if let Some(surface) = learned {
+                surface
+            } else {
+                let lctx = self.lctx_for(base_ctx, combined);
+                self.convert_chunk(&reading, &lctx)
+            }
         } else {
             reading.clone()
         };

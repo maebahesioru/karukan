@@ -473,3 +473,29 @@ fn test_ctrl_shift_l_shows_aux_text() {
     );
     assert!(has_aux);
 }
+
+#[test]
+fn learning_overrides_model_in_live_conversion() {
+    // 実機報告 (2026-10-06): やろう → 野郎 のモデル誤予測を、確定済みの学習
+    // (やろう→やろう) で上書きすること。学習はモデルより信頼する。
+    let mut engine = make_live_conversion_engine();
+    engine.converters.kanji = None;
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record("やろう", "やろう");
+    engine.learning = Some(cache);
+
+    // ライブ変換のチャンク生成 (モデル呼び出しの代わりに学習が返ること)。
+    // converters.kanji = None なので、学習が無ければ読みそのものになる状況での検証。
+    let converted =
+        engine.convert_on_chunk_grid(&"やろう".chars().collect::<Vec<_>>(), "");
+    assert_eq!(
+        converted, "やろう",
+        "learned やろう must override the model, got {:?}",
+        converted
+    );
+
+    // 学習に無い読みはモデル経路 (kanji=None なのでフォールバックは読みそのもの)
+    let converted =
+        engine.convert_on_chunk_grid(&"ありがとう".chars().collect::<Vec<_>>(), "");
+    assert_eq!(converted, "ありがとう");
+}
