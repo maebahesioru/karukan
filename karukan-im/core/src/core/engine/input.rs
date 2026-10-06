@@ -381,7 +381,33 @@ impl InputMethodEngine {
         } else {
             reading.clone()
         };
+        // 自動判定 (Meltype移植): 打った生キー列が英単語と判定されたら、かなに
+        // 変換せず英字のまま確定する (「github」→「github」、「sushi」→「sushi」)。
+        // 判定は確定の瞬間だけ走るので、プリエディット表示は従来のまま。
+        let text = self.auto_english_or(text);
         (reading, text)
+    }
+
+    /// 生キー列 (typed_raw) を自動判定し、英語と判定されたら英字のまま返す。
+    /// 判定できない (編集済み・非英字・日本語判定) 場合は入力をそのまま返す。
+    fn auto_english_or(&self, text: String) -> String {
+        let Some(typed) = self.input_buf.typed_raw() else {
+            return text;
+        };
+        if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
+            return text;
+        }
+        let detector = auto_detect_engine();
+        let input = karukan_engine::detect::DetectionInput {
+            letters: typed.to_string(),
+            keys: Vec::new(),
+            is_final: true,
+        };
+        if detector.evaluate(&input).verdict == karukan_engine::detect::Verdict::English {
+            typed.to_string()
+        } else {
+            text
+        }
     }
 
     /// Commit the current composition (Enter).
@@ -447,5 +473,35 @@ impl InputMethodEngine {
                 .with_action(EngineAction::HideCandidates)
                 .with_action(EngineAction::HideAuxText)
         }
+    }
+}
+
+/// 自動判定エンジン (Meltype 移植) の共有インスタンス。
+///
+/// 確定時にしか使わないため遅延生成。ユーザー辞書ディレクトリは
+/// `~/.local/share/karukan` (無ければ組み込み辞書のみ)。
+/// かな入力判定は仮想キーコードが必要だが、この統合では文字しか無いため無効化する。
+fn auto_detect_engine() -> &'static karukan_engine::detect::ScoreEngine {
+    use std::sync::OnceLock;
+    static ENGINE: OnceLock<karukan_engine::detect::ScoreEngine> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let user_dir = dirs_user_dict_dir();
+        let mut engine = karukan_engine::detect::ScoreEngine::create_default(user_dir.as_deref());
+        let mut settings = engine.settings().clone();
+        settings.use_kana = false;
+        engine.set_settings(settings);
+        engine
+    })
+}
+
+/// 自動判定用のユーザー辞書ディレクトリ (`~/.local/share/karukan/detect` があれば)。
+fn dirs_user_dict_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let dir = std::path::PathBuf::from(home)
+        .join(".local/share/karukan/detect");
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
     }
 }

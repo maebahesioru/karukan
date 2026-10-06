@@ -66,6 +66,12 @@ pub(super) struct InputBuffer {
     ///                                ↑ cursor = 2 (between y and 1)
     /// ```
     cursor: usize,
+    /// この合成中に打たれた生キーストローク列 (小文字化)。日本語/英語の自動判定
+    /// (detect モジュール) が確定時に参照する。編集 (backspace/delete) が入ると
+    /// 対応が崩れるため `typed_valid = false` にして判定を諦める。
+    typed: String,
+    /// `typed` が現在の elements と対応しているか。
+    typed_valid: bool,
 }
 
 impl InputBuffer {
@@ -73,12 +79,16 @@ impl InputBuffer {
         Self {
             elements: Vec::new(),
             cursor: 0,
+            typed: String::new(),
+            typed_valid: true,
         }
     }
 
     pub fn clear(&mut self) {
         self.elements.clear();
         self.cursor = 0;
+        self.typed.clear();
+        self.typed_valid = true;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -93,6 +103,7 @@ impl InputBuffer {
         self.elements
             .insert(self.cursor, Element::Romaji(ch.to_ascii_lowercase()));
         self.cursor += 1;
+        self.typed.push(ch.to_ascii_lowercase());
         self.evaluate_active_run(romaji);
     }
 
@@ -101,6 +112,14 @@ impl InputBuffer {
     pub fn push_direct(&mut self, ch: char) {
         self.elements.insert(self.cursor, Element::Converted(ch));
         self.cursor += 1;
+        self.typed.push(ch);
+        self.evaluate_active_run_direct();
+    }
+
+    /// 直接入力後はローマ字ランが途切れる — 追跡中の生キー列の対応が崩れうるため
+    /// 判定を無効化する (保守的)。
+    fn evaluate_active_run_direct(&mut self) {
+        self.typed_valid = false;
     }
 
     /// Record settled text at the caret. Test setup only — production
@@ -125,6 +144,7 @@ impl InputBuffer {
         }
         self.cursor -= 1;
         self.elements.remove(self.cursor);
+        self.typed_valid = false;
         self.evaluate_joined_run(romaji);
         true
     }
@@ -137,6 +157,7 @@ impl InputBuffer {
             return false;
         }
         self.elements.remove(self.cursor);
+        self.typed_valid = false;
         self.evaluate_joined_run(romaji);
         true
     }
@@ -305,6 +326,16 @@ impl InputBuffer {
     /// caret minus the active run's length.
     pub fn reading_cursor(&self) -> usize {
         self.cursor - self.active_run().len()
+    }
+
+    /// この合成中に打たれた生キーストローク列 (小文字)。編集 (backspace/delete/
+    /// 直接入力) が入ると None (自動判定は諦める)。日本語/英語の自動判定用。
+    pub fn typed_raw(&self) -> Option<&str> {
+        if self.typed_valid {
+            Some(&self.typed)
+        } else {
+            None
+        }
     }
 }
 
