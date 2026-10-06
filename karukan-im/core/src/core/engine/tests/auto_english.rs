@@ -69,3 +69,35 @@ fn edited_input_falls_back_to_kana() {
     // github にはならない (判定無効化) — かな読みのまま
     assert_ne!(commit.as_deref(), Some("github"));
 }
+
+/// 生キー列を打った直後のプリエディット文字列を返す。
+fn preedit_of(keys: &str) -> String {
+    let mut engine = InputMethodEngine::new();
+    for ch in keys.chars() {
+        engine.process_key(&press(ch));
+    }
+    engine.preedit().map(|p| p.text().to_string()).unwrap_or_default()
+}
+
+#[test]
+fn mixed_display_kyouhagithub() {
+    // 「きょうは」+「github」の混在表示 (Meltype の変換ボックスの再現)
+    assert_eq!(preedit_of("kyouhagithub"), "きょうはgithub");
+}
+
+#[test]
+fn mixed_display_all_english() {
+    assert_eq!(preedit_of("github"), "github");
+}
+
+#[test]
+fn mixed_display_all_japanese_unchanged() {
+    // 全部日本語なら従来表示のまま (きょうは)
+    assert_eq!(preedit_of("kyouha"), "きょうは");
+}
+
+#[test]
+fn mixed_display_push_at_end() {
+    // 日本語 + 英単語 (push)
+    assert_eq!(preedit_of("sakujogithubwo"), "さくじょgithubを");
+}

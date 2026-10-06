@@ -1,6 +1,7 @@
 //! Display and preedit construction for the IME engine
 
 use super::*;
+use super::input::build_auto_mixed_text;
 
 /// Marks the part of the reading the beam produced alternatives for.
 const BEAM_SPAN_LABEL: &str = "🎯";
@@ -52,7 +53,21 @@ impl InputMethodEngine {
             let caret = display.chars().count();
             (display, caret)
         } else {
-            (self.build_input_display(), self.input_buf.cursor())
+            // 自動判定 (Meltype移植): 打った生キー列に英単語が混ざっていれば、
+            // 「きょうはgithub」のように英字/かなを混在表示する。カーソルが末尾に
+            // あるときだけ (途中編集では区間とカーソルの対応が崩れるため)。
+            let mixed = if self.input_buf.cursor() == self.input_buf.char_count() {
+                self.input_buf.typed_raw().and_then(build_auto_mixed_text)
+            } else {
+                None
+            };
+            match mixed {
+                Some(text) => {
+                    let caret = text.chars().count();
+                    (text, caret)
+                }
+                None => (self.build_input_display(), self.input_buf.cursor()),
+            }
         };
         let mut preedit = Preedit::with_text_underlined(&display);
         preedit.set_caret(caret);

@@ -505,3 +505,120 @@ fn dirs_user_dict_dir() -> Option<std::path::PathBuf> {
         None
     }
 }
+
+/// 区間分割 (CompositionDetector) の共有インスタンス。混在表示に使う。
+pub(super) fn auto_detector() -> &'static karukan_engine::detect::CompositionDetector {
+    use std::sync::OnceLock;
+    static DETECTOR: OnceLock<karukan_engine::detect::CompositionDetector> = OnceLock::new();
+    DETECTOR.get_or_init(|| {
+        let mut detector = karukan_engine::detect::CompositionDetector::create_default(
+            dirs_user_dict_dir().as_deref(),
+        );
+        detector.set_spell_checker(Box::new(
+            karukan_engine::detect::BuiltInWordChecker::shared().clone(),
+        ));
+        detector
+    })
+}
+
+/// 生キー列を変換単位 (かな 1 音 + 実際に打った文字) に分割する。
+/// ローマ字として変換できる所はかなに、できない英字・記号はそのまま 1 単位。
+/// 単位の raw を連結すると元の生キー列に戻る (混在表示の再構築に必要)。
+pub(super) fn typed_to_units(typed: &str) -> Vec<karukan_engine::detect::CompositionUnit> {
+    use karukan_engine::detect::{CompositionUnit, RomajiDetector};
+    use std::sync::OnceLock;
+    static ROMAJI: OnceLock<RomajiDetector> = OnceLock::new();
+    let romaji = ROMAJI.get_or_init(RomajiDetector::new);
+
+    let chars: Vec<char> = typed.chars().collect();
+    let mut units = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let rest: String = chars[i..].iter().collect();
+        let analysis = romaji.analyze_fragment(&rest);
+        let mut consumed = 0usize;
+        for token in &analysis.tokens {
+            consumed += token.romaji.chars().count();
+            units.push(CompositionUnit {
+                kana: token.kana.clone(),
+                raw: token.romaji.clone(),
+            });
+        }
+        if analysis.is_valid {
+            // 打ちかけの子音など partial は生のまま単位化
+            for ch in analysis.partial.chars() {
+                units.push(CompositionUnit {
+                    kana: ch.to_string(),
+                    raw: ch.to_string(),
+                });
+                consumed += 1;
+            }
+            i += consumed;
+        } else if consumed < chars.len() - i {
+            // 変換できなかった先頭 1 文字を生のまま単位化
+            let ch = chars[i + consumed];
+            units.push(CompositionUnit {
+                kana: ch.to_string(),
+                raw: ch.to_string(),
+            });
+            i += consumed + 1;
+        } else {
+            i += consumed.max(1);
+        }
+    }
+    units
+}
+
+/// 生キー列を区間分割し、混在表示の文字列を作る。
+/// 全セグメントが日本語なら None (従来表示と同じなので呼び出し側は従来表示を使う)。
+pub(super) fn build_auto_mixed_text(typed: &str) -> Option<String> {
+    use karukan_engine::detect::DetectionLevel;
+    if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    let units = typed_to_units(typed);
+    if units.is_empty() {
+        return None;
+    }
+    let detector = auto_detector();
+    let segments = detector.segment(
+        &units,
+        "",
+        None,
+        None,
+        DetectionLevel::Balanced,
+        false,
+        false,
+        false,
+    );
+    // 保守化: 辞書に載っている英単語 (github, sushi, push …) を根拠にした英語区間が
+    // 1 つも無ければ混在表示にしない。「読めない文字列 = 英語」だけの判定 (ytko など
+    // 打ちかけの子音列) で従来表示 (ytこ) を変えてしまわないため。
+    use karukan_engine::detect::EnglishDetector;
+    use std::sync::OnceLock;
+    static KNOWN: OnceLock<EnglishDetector> = OnceLock::new();
+    let known = KNOWN.get_or_init(|| {
+        let mut words = karukan_engine::detect::DictionarySource::load(
+            "english.txt",
+            dirs_user_dict_dir().as_deref(),
+        );
+        let proper = karukan_engine::detect::ProperNouns::load(dirs_user_dict_dir().as_deref());
+        words.extend(proper.lowercase_words().cloned());
+        EnglishDetector::new(words)
+    });
+    let has_strong_english = segments
+        .iter()
+        .any(|s| s.is_english && !s.raw.is_empty() && known.words.contains_word(&s.raw.to_lowercase()));
+    if !has_strong_english {
+        return None;
+    }
+    let mut out = String::new();
+    for seg in &segments {
+        if seg.is_english {
+            out.push_str(&seg.raw);
+        } else {
+            out.push_str(&seg.kana);
+        }
+    }
+    Some(out)
+}

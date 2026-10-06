@@ -27,6 +27,7 @@ pub trait WordChecker: Send + Sync {
 
 /// 同梱のよく使う英単語の一覧 (english-words.txt、SCOWL から作成) で英単語かを調べる。
 /// 打ち間違いの自動修正は無い。
+#[derive(Clone)]
 pub struct BuiltInWordChecker {
     words: HashSet<String>,
 }
