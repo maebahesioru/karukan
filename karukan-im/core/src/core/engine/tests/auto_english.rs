@@ -112,3 +112,12 @@ fn mixed_commit_kyouhagithub() {
 fn mixed_commit_japanese_english_japanese() {
     assert_eq!(commit_of("sakujogithubwo").as_deref(), Some("さくじょgithubを"));
 }
+
+#[test]
+fn z_symbol_shortcut_not_reverted() {
+    // z系ショートカット (zl → →) を自動判定が英字に戻さないこと
+    assert_eq!(commit_of("zl").as_deref(), Some("→"));
+    assert_eq!(commit_of("zh").as_deref(), Some("←"));
+    assert_eq!(commit_of("zj").as_deref(), Some("↓"));
+    assert_eq!(commit_of("zk").as_deref(), Some("↑"));
+}

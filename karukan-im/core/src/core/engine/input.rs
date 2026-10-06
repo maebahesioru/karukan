@@ -12,6 +12,20 @@ fn append_candidates_dedup(target: &mut Vec<Candidate>, source: Vec<Candidate>) 
     }
 }
 
+/// 自動判定を適用してよい入力か。読み (変換結果) に、かな・漢字・英数字以外の
+/// 文字 (→ ← 等の記号ショートカット出力) が含まれていたら false。
+/// z系ショートカット (zl → →) の確定を英字 (zl) に戻さないためのガード。
+fn reading_allows_auto(reading: &str) -> bool {
+    reading.chars().all(|c| {
+        matches!(c,
+            '\u{3040}'..='\u{30ff}'   // かな
+            | '\u{4e00}'..='\u{9fff}' // 漢字
+            | '\u{ff66}'..='\u{ff9d}' // 半角カナ
+            | 'a'..='z' | 'A'..='Z' | '0'..='9'
+        )
+    })
+}
+
 impl InputMethodEngine {
     /// Refresh the input state: rebuild preedit and run auto-suggest for candidates.
     pub(super) fn refresh_input_state(&mut self) -> EngineResult {
@@ -401,6 +415,9 @@ impl InputMethodEngine {
     /// あれば混在テキスト (kyouhagithub → きょうはgithub) を返す。ライブ変換より
     /// 優先して使う (ライブ変換は github をローマ字として読もうとして壊すため)。
     fn auto_segment_text(&self) -> Option<String> {
+        if !reading_allows_auto(&self.input_buf.reading()) {
+            return None;
+        }
         let typed = self.input_buf.typed_raw()?;
         if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
             return None;
@@ -437,6 +454,9 @@ impl InputMethodEngine {
     /// 使う (sushi → sushi。waseda のような固有名詞の前方一致でライブ変換の漢字を
     /// 上書きしないため、弱い側はライブより優先しない)。
     fn auto_word_text(&self) -> Option<String> {
+        if !reading_allows_auto(&self.input_buf.reading()) {
+            return None;
+        }
         let typed = self.input_buf.typed_raw()?;
         if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
             return None;
