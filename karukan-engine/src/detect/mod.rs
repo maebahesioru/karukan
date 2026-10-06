@@ -15,11 +15,19 @@
 //! - 打ち間違い (Levenshtein) → JP 加点 (補助のみ)
 
 mod detectors;
+mod kana_detector;
+mod memory;
+mod romaji_detector;
+mod score;
 mod word_checker;
 mod word_list;
 
-pub use detectors::{DictionaryDetector, EnglishDetector, ProperNouns, TypoDetector};
-pub use word_checker::BuiltInWordChecker;
+pub use detectors::{starts_with_particle, DictionaryDetector, EnglishDetector, ProperNouns, TypoDetector};
+pub use kana_detector::KanaDetector;
+pub use memory::{Entry, LanguageMemory, Learned};
+pub use romaji_detector::{RomajiAnalysis, RomajiDetector, RomajiToken};
+pub use score::{DetectSettings, DetectionInput, DetectionResult, ScoreEngine};
+pub use word_checker::{BuiltInWordChecker, WordChecker};
 pub use word_list::{DictionarySource, WordList};
 
 /// 判定結果の種類。

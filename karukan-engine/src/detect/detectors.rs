@@ -146,15 +146,23 @@ impl ProperNouns {
 }
 
 /// 日本語辞書の語との編集距離で打ち間違いを拾う。補助的な加点のみ。
-pub struct TypoDetector<'a> {
-    japanese_words: &'a WordList,
+pub struct TypoDetector {
+    japanese_words: WordList,
 }
 
-impl<'a> TypoDetector<'a> {
+impl TypoDetector {
     pub const MIN_LENGTH: usize = 5;
 
-    pub fn new(japanese_words: &'a WordList) -> Self {
-        Self { japanese_words }
+    pub fn new(japanese_words: &WordList) -> Self {
+        // 辞書の語彙を複製して所有する (判定器のライフタイムを単純にするため。
+        // 日本語辞書は小さいので複製コストは無視できる)。
+        let mut owned = WordList::new();
+        for word in japanese_words.words() {
+            owned.add(word);
+        }
+        Self {
+            japanese_words: owned,
+        }
     }
 
     pub fn evaluate(&self, letters: &str, output: &mut Vec<Contribution>) {
