@@ -461,6 +461,12 @@ impl InputMethodEngine {
         if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
             return None;
         }
+        // 1 文字は判定しない: "a" や "i" は英語辞書にも載っている (冠詞・代名詞) ため、
+        // 単独で打った あ・い を英字確定してしまう (実機報告: 1文字がローマ字になる)。
+        // 1 文字の英字入力は英数モードで行うものとし、かな入力を優先する。
+        if typed.chars().count() < 2 {
+            return None;
+        }
         let units = typed_to_units(typed);
         if units.is_empty() {
             return None;

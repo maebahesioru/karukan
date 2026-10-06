@@ -121,3 +121,20 @@ fn z_symbol_shortcut_not_reverted() {
     assert_eq!(commit_of("zj").as_deref(), Some("↓"));
     assert_eq!(commit_of("zk").as_deref(), Some("↑"));
 }
+
+#[test]
+fn single_char_stays_kana() {
+    // 1文字は英語辞書 (a, i) にあってもかな優先 (実機報告の修正)
+    assert_eq!(commit_of("a").as_deref(), Some("あ"));
+    assert_eq!(commit_of("i").as_deref(), Some("い"));
+    assert_eq!(commit_of("u").as_deref(), Some("う"));
+    assert_eq!(commit_of("ka").as_deref(), Some("か"));
+}
+
+#[test]
+fn two_char_words_stay_kana_without_context() {
+    // 2文字の「ローマ字としても読める語」は文脈なしではかな優先 (Meltype の設計:
+    // 2文字は両側が英語のときだけ英字)。ご・あい のような日本語を守る。
+    assert_eq!(commit_of("go").as_deref(), Some("ご"));
+    assert_eq!(commit_of("ai").as_deref(), Some("あい"));
+}
