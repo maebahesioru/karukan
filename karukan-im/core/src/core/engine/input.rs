@@ -371,43 +371,44 @@ impl InputMethodEngine {
         let live_text = self.live_text_with_pending();
         self.settle_romaji();
         let reading = self.input_buf.reading();
+        // 自動判定 (Meltype移植) の優先順:
+        // ① 区間分割の強い判定 (kyouhagithub → きょうはgithub) はライブ変換より優先
+        // ② ライブ変換 (モデルの漢字) は尊重 (早稲田d を わせだd にしない)
+        // ③ ライブなしのときだけ語全体判定 (sushi → sushi)
+        let auto_strong = if self.mode.current() == InputMode::Emoji
+            || self.mode.current() == InputMode::Katakana
+        {
+            None
+        } else {
+            self.auto_segment_text()
+        };
         let text = if self.mode.current() == InputMode::Emoji {
             self.first_emoji_candidate(&reading)
                 .unwrap_or_else(|| reading.clone())
         } else if self.mode.current() == InputMode::Katakana {
             karukan_engine::hiragana_to_katakana(&reading)
+        } else if let Some(auto) = auto_strong {
+            auto
         } else if !live_text.is_empty() {
-            // ライブ変換 (モデル) が漢字を出している場合はそれを尊重する
-            // (自動判定はライブ変換なしのときだけ — 早稲田d を わせだd にしない)。
             live_text
         } else {
-            // 自動判定 (Meltype移植): 打った生キー列を区間分割し、英語区間があれば
-            // 混在テキストで確定する (「kyouhagithub」→「きょうはgithub」、
-            // 「github」→「github」)。判定は確定の瞬間だけ走る。
-            self.auto_commit_text(reading.clone())
+            self.auto_word_text().unwrap_or_else(|| reading.clone())
         };
         (reading, text)
     }
 
-    /// 生キー列 (typed_raw) を区間分割し、英語区間を含むなら混在テキスト
-    /// (日本語区間はかな・英語区間は英字のまま) を確定テキストとして返す。
-    ///
-    /// 例: kyouhagithub → きょうはgithub / github → github。
-    /// 全日本語区間なら従来の確定テキスト (かな/漢字) をそのまま返す。
-    /// 編集済み・非英字は判定を諦めて従来の確定テキストを返す。
-    fn auto_commit_text(&self, kana_text: String) -> String {
-        let Some(typed) = self.input_buf.typed_raw() else {
-            return kana_text;
-        };
+    /// 生キー列の区間分割による「強い」自動判定。辞書英単語を根拠にした英語区間が
+    /// あれば混在テキスト (kyouhagithub → きょうはgithub) を返す。ライブ変換より
+    /// 優先して使う (ライブ変換は github をローマ字として読もうとして壊すため)。
+    fn auto_segment_text(&self) -> Option<String> {
+        let typed = self.input_buf.typed_raw()?;
         if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
-            return kana_text;
+            return None;
         }
         let units = typed_to_units(typed);
         if units.is_empty() {
-            return kana_text;
+            return None;
         }
-        // ① 区間分割: 英語区間が 1 つでもあれば混在テキストで確定
-        //    (kyouhagithub → きょうはgithub)
         let segments = auto_detector().segment(
             &units,
             "",
@@ -418,28 +419,46 @@ impl InputMethodEngine {
             false,
             true,
         );
-        if has_dictionary_english(&segments) {
-            let mut out = String::new();
-            for seg in &segments {
-                if seg.is_english {
-                    out.push_str(&seg.raw);
-                } else {
-                    out.push_str(&seg.kana);
-                }
-            }
-            return out;
+        if !has_dictionary_english(&segments) {
+            return None;
         }
-        // ② 区間分割が全て日本語でも、語全体が英単語なら英字で確定
-        //    (sushi 単体は文脈なしでは区間分割で英語にならない — Meltype の設計)
+        let mut out = String::new();
+        for seg in &segments {
+            if seg.is_english {
+                out.push_str(&seg.raw);
+            } else {
+                out.push_str(&seg.kana);
+            }
+        }
+        Some(out)
+    }
+
+    /// 語全体が英単語か (ScoreEngine) の「弱い」自動判定。ライブ変換が無いときだけ
+    /// 使う (sushi → sushi。waseda のような固有名詞の前方一致でライブ変換の漢字を
+    /// 上書きしないため、弱い側はライブより優先しない)。
+    fn auto_word_text(&self) -> Option<String> {
+        let typed = self.input_buf.typed_raw()?;
+        if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
+            return None;
+        }
+        let units = typed_to_units(typed);
+        if units.is_empty() {
+            return None;
+        }
+        // ① 区間分割: 英語区間が 1 つでもあれば混在テキストで確定
+        //    (kyouhagithub → きょうはgithub)
+        let _ = units;
+        // 語全体が英単語なら英字 (sushi 単体は文脈なしでは区間分割で英語にならない
+        // — Meltype の設計 — ため ScoreEngine で補完)
         let input = karukan_engine::detect::DetectionInput {
             letters: typed.to_string(),
             keys: Vec::new(),
             is_final: true,
         };
         if auto_detect_engine().evaluate(&input).verdict == karukan_engine::detect::Verdict::English {
-            return typed.to_string();
+            return Some(typed.to_string());
         }
-        kana_text
+        None
     }
 
     /// Commit the current composition (Enter).
@@ -605,9 +624,10 @@ pub(super) fn typed_to_units(typed: &str) -> Vec<karukan_engine::detect::Composi
 /// 英語区間が含まれるか。「読めない文字列 = 英語」だけの弱い判定を表示・確定に
 /// 使わないための保守ゲート。
 pub(super) fn has_dictionary_english(segments: &[karukan_engine::detect::CompositionSegment]) -> bool {
-    use karukan_engine::detect::EnglishDetector;
+    use karukan_engine::detect::{EnglishDetector, RomajiDetector};
     use std::sync::OnceLock;
     static KNOWN: OnceLock<EnglishDetector> = OnceLock::new();
+    static ROMAJI: OnceLock<RomajiDetector> = OnceLock::new();
     let known = KNOWN.get_or_init(|| {
         let mut words = karukan_engine::detect::DictionarySource::load(
             "english.txt",
@@ -617,9 +637,21 @@ pub(super) fn has_dictionary_english(segments: &[karukan_engine::detect::Composi
         words.extend(proper.lowercase_words().cloned());
         EnglishDetector::new(words)
     });
-    segments
-        .iter()
-        .any(|s| s.is_english && !s.raw.is_empty() && known.words.contains_word(&s.raw.to_lowercase()))
+    let romaji = ROMAJI.get_or_init(RomajiDetector::new);
+    segments.iter().any(|s| {
+        if !s.is_english || s.raw.chars().count() < 2 {
+            return false;
+        }
+        let lower = s.raw.to_lowercase();
+        if !known.words.contains_word(&lower) {
+            return false;
+        }
+        // さらに「判定用のローマ字解析で成立しない」区間だけを強判定にする。
+        // 読める英単語 (dad = だ+d、sushi = すし) でライブ変換の漢字 (早稲田d) を
+        // 壊さないため。github は判定用解析 (th が不成立) で invalid なので強判定。
+        // 変換ボックス用の analyze_fragment は thu=てゅ 等も読めるため使わない。
+        !romaji.analyze(&lower).is_valid
+    })
 }
 
 /// 生キー列を区間分割し、混在表示の文字列を作る。

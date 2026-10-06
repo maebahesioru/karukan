@@ -44,6 +44,20 @@ impl InputMethodEngine {
     /// not the visual tail, so fall back to the kana display.
     /// Otherwise shows the input buffer display with cursor-based caret.
     pub(super) fn build_composing_preedit(&self) -> Preedit {
+        // 自動判定 (Meltype移植): 打った生キー列に辞書英単語の区間があれば、
+        // ライブ変換より優先して「きょうはgithub」の混在表示を出す (ライブ変換は
+        // github をローマ字として読もうとして壊すため)。カーソルが末尾にあるときだけ。
+        let mixed = if self.input_buf.cursor() == self.input_buf.char_count() {
+            self.input_buf.typed_raw().and_then(build_auto_mixed_text)
+        } else {
+            None
+        };
+        if let Some(text) = mixed {
+            let caret = text.chars().count();
+            let mut preedit = Preedit::with_text_underlined(&text);
+            preedit.set_caret(caret);
+            return preedit;
+        }
         let live = self.live_text();
         let live_at_end =
             !live.is_empty() && self.input_buf.cursor() == self.input_buf.char_count();
@@ -53,21 +67,7 @@ impl InputMethodEngine {
             let caret = display.chars().count();
             (display, caret)
         } else {
-            // 自動判定 (Meltype移植): 打った生キー列に英単語が混ざっていれば、
-            // 「きょうはgithub」のように英字/かなを混在表示する。カーソルが末尾に
-            // あるときだけ (途中編集では区間とカーソルの対応が崩れるため)。
-            let mixed = if self.input_buf.cursor() == self.input_buf.char_count() {
-                self.input_buf.typed_raw().and_then(build_auto_mixed_text)
-            } else {
-                None
-            };
-            match mixed {
-                Some(text) => {
-                    let caret = text.chars().count();
-                    (text, caret)
-                }
-                None => (self.build_input_display(), self.input_buf.cursor()),
-            }
+            (self.build_input_display(), self.input_buf.cursor())
         };
         let mut preedit = Preedit::with_text_underlined(&display);
         preedit.set_caret(caret);
