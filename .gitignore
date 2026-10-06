@@ -37,6 +37,8 @@ build
 data/
 # Tracked data: symbol descriptions / variants for the rewriter
 !karukan-engine/data/
+# Tracked data: Meltype 移植の判定用辞書 (detect モジュールが include_str! で参照)
+!karukan-engine/src/detect/data/
 *.json
 !renovate.json
 *.cache
