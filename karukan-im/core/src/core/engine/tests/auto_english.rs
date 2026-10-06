@@ -101,3 +101,14 @@ fn mixed_display_push_at_end() {
     // 日本語 + 英単語 (push)
     assert_eq!(preedit_of("sakujogithubwo"), "さくじょgithubを");
 }
+
+#[test]
+fn mixed_commit_kyouhagithub() {
+    // 混在確定: 日本語区間はかな・英語区間は英字のまま
+    assert_eq!(commit_of("kyouhagithub").as_deref(), Some("きょうはgithub"));
+}
+
+#[test]
+fn mixed_commit_japanese_english_japanese() {
+    assert_eq!(commit_of("sakujogithubwo").as_deref(), Some("さくじょgithubを"));
+}

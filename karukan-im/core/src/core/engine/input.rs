@@ -377,37 +377,69 @@ impl InputMethodEngine {
         } else if self.mode.current() == InputMode::Katakana {
             karukan_engine::hiragana_to_katakana(&reading)
         } else if !live_text.is_empty() {
+            // ライブ変換 (モデル) が漢字を出している場合はそれを尊重する
+            // (自動判定はライブ変換なしのときだけ — 早稲田d を わせだd にしない)。
             live_text
         } else {
-            reading.clone()
+            // 自動判定 (Meltype移植): 打った生キー列を区間分割し、英語区間があれば
+            // 混在テキストで確定する (「kyouhagithub」→「きょうはgithub」、
+            // 「github」→「github」)。判定は確定の瞬間だけ走る。
+            self.auto_commit_text(reading.clone())
         };
-        // 自動判定 (Meltype移植): 打った生キー列が英単語と判定されたら、かなに
-        // 変換せず英字のまま確定する (「github」→「github」、「sushi」→「sushi」)。
-        // 判定は確定の瞬間だけ走るので、プリエディット表示は従来のまま。
-        let text = self.auto_english_or(text);
         (reading, text)
     }
 
-    /// 生キー列 (typed_raw) を自動判定し、英語と判定されたら英字のまま返す。
-    /// 判定できない (編集済み・非英字・日本語判定) 場合は入力をそのまま返す。
-    fn auto_english_or(&self, text: String) -> String {
+    /// 生キー列 (typed_raw) を区間分割し、英語区間を含むなら混在テキスト
+    /// (日本語区間はかな・英語区間は英字のまま) を確定テキストとして返す。
+    ///
+    /// 例: kyouhagithub → きょうはgithub / github → github。
+    /// 全日本語区間なら従来の確定テキスト (かな/漢字) をそのまま返す。
+    /// 編集済み・非英字は判定を諦めて従来の確定テキストを返す。
+    fn auto_commit_text(&self, kana_text: String) -> String {
         let Some(typed) = self.input_buf.typed_raw() else {
-            return text;
+            return kana_text;
         };
         if typed.is_empty() || !typed.chars().all(|c| c.is_ascii_lowercase()) {
-            return text;
+            return kana_text;
         }
-        let detector = auto_detect_engine();
+        let units = typed_to_units(typed);
+        if units.is_empty() {
+            return kana_text;
+        }
+        // ① 区間分割: 英語区間が 1 つでもあれば混在テキストで確定
+        //    (kyouhagithub → きょうはgithub)
+        let segments = auto_detector().segment(
+            &units,
+            "",
+            None,
+            None,
+            karukan_engine::detect::DetectionLevel::Balanced,
+            false,
+            false,
+            true,
+        );
+        if has_dictionary_english(&segments) {
+            let mut out = String::new();
+            for seg in &segments {
+                if seg.is_english {
+                    out.push_str(&seg.raw);
+                } else {
+                    out.push_str(&seg.kana);
+                }
+            }
+            return out;
+        }
+        // ② 区間分割が全て日本語でも、語全体が英単語なら英字で確定
+        //    (sushi 単体は文脈なしでは区間分割で英語にならない — Meltype の設計)
         let input = karukan_engine::detect::DetectionInput {
             letters: typed.to_string(),
             keys: Vec::new(),
             is_final: true,
         };
-        if detector.evaluate(&input).verdict == karukan_engine::detect::Verdict::English {
-            typed.to_string()
-        } else {
-            text
+        if auto_detect_engine().evaluate(&input).verdict == karukan_engine::detect::Verdict::English {
+            return typed.to_string();
         }
+        kana_text
     }
 
     /// Commit the current composition (Enter).
@@ -569,6 +601,27 @@ pub(super) fn typed_to_units(typed: &str) -> Vec<karukan_engine::detect::Composi
     units
 }
 
+/// 区間分割の結果に、辞書 (english.txt + propernouns) の英単語を根拠にした
+/// 英語区間が含まれるか。「読めない文字列 = 英語」だけの弱い判定を表示・確定に
+/// 使わないための保守ゲート。
+pub(super) fn has_dictionary_english(segments: &[karukan_engine::detect::CompositionSegment]) -> bool {
+    use karukan_engine::detect::EnglishDetector;
+    use std::sync::OnceLock;
+    static KNOWN: OnceLock<EnglishDetector> = OnceLock::new();
+    let known = KNOWN.get_or_init(|| {
+        let mut words = karukan_engine::detect::DictionarySource::load(
+            "english.txt",
+            dirs_user_dict_dir().as_deref(),
+        );
+        let proper = karukan_engine::detect::ProperNouns::load(dirs_user_dict_dir().as_deref());
+        words.extend(proper.lowercase_words().cloned());
+        EnglishDetector::new(words)
+    });
+    segments
+        .iter()
+        .any(|s| s.is_english && !s.raw.is_empty() && known.words.contains_word(&s.raw.to_lowercase()))
+}
+
 /// 生キー列を区間分割し、混在表示の文字列を作る。
 /// 全セグメントが日本語なら None (従来表示と同じなので呼び出し側は従来表示を使う)。
 pub(super) fn build_auto_mixed_text(typed: &str) -> Option<String> {
@@ -591,25 +644,9 @@ pub(super) fn build_auto_mixed_text(typed: &str) -> Option<String> {
         false,
         false,
     );
-    // 保守化: 辞書に載っている英単語 (github, sushi, push …) を根拠にした英語区間が
-    // 1 つも無ければ混在表示にしない。「読めない文字列 = 英語」だけの判定 (ytko など
-    // 打ちかけの子音列) で従来表示 (ytこ) を変えてしまわないため。
-    use karukan_engine::detect::EnglishDetector;
-    use std::sync::OnceLock;
-    static KNOWN: OnceLock<EnglishDetector> = OnceLock::new();
-    let known = KNOWN.get_or_init(|| {
-        let mut words = karukan_engine::detect::DictionarySource::load(
-            "english.txt",
-            dirs_user_dict_dir().as_deref(),
-        );
-        let proper = karukan_engine::detect::ProperNouns::load(dirs_user_dict_dir().as_deref());
-        words.extend(proper.lowercase_words().cloned());
-        EnglishDetector::new(words)
-    });
-    let has_strong_english = segments
-        .iter()
-        .any(|s| s.is_english && !s.raw.is_empty() && known.words.contains_word(&s.raw.to_lowercase()));
-    if !has_strong_english {
+    // 保守化: 辞書英単語を根拠にした英語区間が無ければ混在表示にしない
+    // (打ちかけの子音列 ytko 等で従来表示を変えない)。
+    if !has_dictionary_english(&segments) {
         return None;
     }
     let mut out = String::new();
