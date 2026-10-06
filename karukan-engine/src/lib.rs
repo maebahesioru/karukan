@@ -1,3 +1,4 @@
+pub mod detect;
 pub mod dict;
 pub mod kana;
 pub mod kanji;
